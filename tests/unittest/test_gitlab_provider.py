@@ -423,6 +423,16 @@ class TestGitLabIncrementalReview:
         assert gitlab_provider.incremental.last_seen_commit.commit.author.date is not None
         assert gitlab_provider.incremental.first_new_commit_sha == "c1"
 
+    def test_get_previous_review_caches_empty_notes_list(self, gitlab_provider):
+        # An MR with no notes must still cache the result; falsy-checks would re-fetch each call.
+        gitlab_provider.mr.notes.list.return_value = []
+
+        first = gitlab_provider.get_previous_review(full=True, incremental=True)
+        second = gitlab_provider.get_previous_review(full=True, incremental=True)
+
+        assert first is None and second is None
+        assert gitlab_provider.mr.notes.list.call_count == 1
+
     def test_incremental_get_diff_files_expands_submodule_changes(self, gitlab_provider):
         # Set up incremental state directly to isolate get_diff_files behaviour.
         gitlab_provider.incremental = IncrementalPR(True)

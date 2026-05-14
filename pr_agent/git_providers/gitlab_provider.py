@@ -501,7 +501,9 @@ class GitLabProvider(GitProvider):
     def get_previous_review(self, *, full: bool, incremental: bool):
         if not (full or incremental):
             raise ValueError("At least one of full or incremental must be True")
-        if not getattr(self, '_incremental_notes_cache', None):
+        # Use hasattr (not truthy) so a legitimately empty notes list still counts as cached;
+        # otherwise we'd re-fetch from GitLab on every call for MRs that have no notes.
+        if not hasattr(self, '_incremental_notes_cache'):
             try:
                 self._incremental_notes_cache = list(self.mr.notes.list(get_all=True))
             except Exception as e:
