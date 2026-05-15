@@ -423,6 +423,39 @@ class TestGitLabIncrementalReview:
         assert gitlab_provider.incremental.last_seen_commit.commit.author.date is not None
         assert gitlab_provider.incremental.first_new_commit_sha == "c1"
 
+    def test_unparseable_review_timestamp_falls_back_to_full(self, gitlab_provider, mock_project):
+        # If the previous review's created_at didn't parse, we can't position commits on the
+        # timeline; we must fall back to a full review rather than silently report "no new files".
+        gitlab_provider.mr.notes.list.return_value = [
+            self._make_note(7, "## PR Reviewer Guide 🔍\nbody", "not-a-date"),
+        ]
+        gitlab_provider.mr.commits.return_value = [
+            self._make_commit("c1", "2024-05-01T11:00:00Z"),
+        ]
+
+        gitlab_provider.get_incremental_commits(IncrementalPR(True))
+
+        assert gitlab_provider.incremental.is_incremental is False
+        mock_project.repository_compare.assert_not_called()
+
+    def test_all_post_review_commits_dateless_falls_back_to_full(self, gitlab_provider, mock_project):
+        # If every commit after the previous review has an unparseable timestamp, we can't
+        # anchor a last_seen_commit. The fix must fall back to full review, not produce a
+        # spurious "Incremental Review Skipped" message.
+        gitlab_provider.mr.notes.list.return_value = [
+            self._make_note(7, "## PR Reviewer Guide 🔍\nbody", "2024-05-01T10:00:00Z"),
+        ]
+        bad1 = MagicMock(spec=["id", "committed_date", "authored_date", "created_at"])
+        bad1.id, bad1.committed_date, bad1.authored_date, bad1.created_at = "cX1", None, None, None
+        bad2 = MagicMock(spec=["id", "committed_date", "authored_date", "created_at"])
+        bad2.id, bad2.committed_date, bad2.authored_date, bad2.created_at = "cX2", "garbage", None, None
+        gitlab_provider.mr.commits.return_value = [bad1, bad2]
+
+        gitlab_provider.get_incremental_commits(IncrementalPR(True))
+
+        assert gitlab_provider.incremental.is_incremental is False
+        mock_project.repository_compare.assert_not_called()
+
     def test_get_previous_review_caches_empty_notes_list(self, gitlab_provider):
         # An MR with no notes must still cache the result; falsy-checks would re-fetch each call.
         gitlab_provider.mr.notes.list.return_value = []

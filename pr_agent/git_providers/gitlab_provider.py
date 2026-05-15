@@ -435,6 +435,20 @@ class GitLabProvider(GitProvider):
 
         self.incremental.commits_range = self.get_commit_range()
         if not self.incremental.commits_range:
+            # Disambiguate two cases:
+            # - last_seen_commit is set: we successfully walked the commit timeline and
+            #   found that all commits are at-or-before the previous review, i.e. legitimately
+            #   no new commits since the last review. Keep is_incremental=True so the reviewer
+            #   surfaces "Incremental Review Skipped — no files changed".
+            # - last_seen_commit is unset: we couldn't anchor any commit on the timeline
+            #   (the previous review's timestamp didn't parse, or every post-review commit was
+            #   dateless). Fall back to a full review rather than silently dropping the run.
+            if self.incremental.last_seen_commit is None:
+                get_logger().info(
+                    "Could not establish a commit timeline against the previous review "
+                    "(missing/unparseable timestamps); falling back to a full review"
+                )
+                self.incremental.is_incremental = False
             return
 
         last_seen_sha = self.incremental.last_seen_commit_sha
