@@ -367,6 +367,11 @@ class TestGitLabIncrementalReview:
                  "new_file": True, "deleted_file": False, "renamed_file": False},
             ]
         }
+        # mr.changes() is intersected with repository_compare to exclude files brought in
+        # via a merge from the target branch. Here both files are part of the MR.
+        gitlab_provider.mr.changes.return_value = {
+            "changes": [{"new_path": "a.py"}, {"new_path": "b.py"}]
+        }
 
         gitlab_provider.get_incremental_commits(IncrementalPR(True))
 
@@ -433,6 +438,42 @@ class TestGitLabIncrementalReview:
 
         assert result is not None
         assert result.id == 2
+
+    def test_master_merge_files_are_excluded_from_incremental_scope(self, gitlab_provider, mock_project):
+        # Reproduction of the MR !1115 bug: user ran `git merge master` on the feature branch,
+        # which brought CI/config changes into the branch via a merge commit. Those files are
+        # NOT part of mr.changes() (the MR's actual contribution against its merge-base), but
+        # repository_compare(last_seen, head) walks through the merge and surfaces them.
+        # The fix intersects with mr.changes() to drop these "phantom" files.
+        gitlab_provider.mr.notes.list.return_value = [
+            self._make_note(7, "## PR Reviewer Guide 🔍\nbody", "2024-05-01T10:00:00Z"),
+        ]
+        gitlab_provider.mr.commits.return_value = [
+            self._make_commit("merge", "2024-05-01T11:30:00Z"),  # merge from master
+            self._make_commit("feat",  "2024-05-01T11:00:00Z"),  # author commit on feature
+            self._make_commit("c0",    "2024-05-01T09:00:00Z"),  # anchor (pre-review)
+        ]
+        mock_project.repository_compare.return_value = {
+            "diffs": [
+                # MR's own change to a frontend file — must be reviewed
+                {"new_path": "src/feature.js", "old_path": "src/feature.js", "diff": "@@ ... @@",
+                 "new_file": False, "deleted_file": False, "renamed_file": False},
+                # Pulled in via merge from master, NOT part of the MR — must be excluded
+                {"new_path": ".gitlab-ci.yml", "old_path": ".gitlab-ci.yml", "diff": "@@ ... @@",
+                 "new_file": False, "deleted_file": False, "renamed_file": False},
+            ]
+        }
+        # mr.changes() returns only the MR's actual contribution; .gitlab-ci.yml is absent
+        # because the change to it lives in the target branch already.
+        gitlab_provider.mr.changes.return_value = {
+            "changes": [{"new_path": "src/feature.js"}]
+        }
+
+        gitlab_provider.get_incremental_commits(IncrementalPR(True))
+
+        assert gitlab_provider.incremental.is_incremental is True
+        assert set(gitlab_provider.unreviewed_files_set.keys()) == {"src/feature.js"}
+        assert ".gitlab-ci.yml" not in gitlab_provider.unreviewed_files_set
 
     def test_commit_with_unparseable_date_is_skipped_not_anchored(self, gitlab_provider, mock_project):
         # Anchor commit (c0) has a valid date older than the review; a stray dateless
@@ -526,6 +567,7 @@ class TestGitLabIncrementalReview:
             "diffs": [{"new_path": "a.py", "old_path": "a.py", "diff": "@@ ... @@",
                        "new_file": False, "deleted_file": False, "renamed_file": False}],
         }
+        gitlab_provider.mr.changes.return_value = {"changes": [{"new_path": "a.py"}]}
 
         gitlab_provider.get_incremental_commits(IncrementalPR(True), kind="suggestions")
 

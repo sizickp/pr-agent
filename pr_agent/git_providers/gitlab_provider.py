@@ -502,10 +502,38 @@ class GitLabProvider(GitProvider):
         else:
             diffs = getattr(compare_result, 'diffs', []) or []
 
+        # `repository_compare(last_seen_sha, head_sha)` walks every commit on the path between
+        # the two SHAs, so if `git merge <target>` was run on the MR branch since the last
+        # incremental pass, files that only changed in the target branch (and were brought in
+        # via the merge) appear in `diffs` — even though they are not part of the MR's own
+        # contribution and would never appear in a full /review.
+        #
+        # `mr.changes()` is anchored on the MR's merge-base with target, so it correctly excludes
+        # target-side changes. Intersect file paths to drop "phantom" files brought in via merge.
+        mr_change_paths = None
+        try:
+            mr_change_paths = {
+                c.get('new_path')
+                for c in self.mr.changes().get('changes', [])
+                if c.get('new_path')
+            }
+        except Exception as e:
+            get_logger().warning(
+                f"Could not fetch mr.changes() to filter incremental scope; "
+                f"merge-from-target changes may leak into the review: {e}"
+            )
+
         for diff in diffs:
             new_path = diff.get('new_path') if isinstance(diff, dict) else None
-            if new_path:
-                self.unreviewed_files_set[new_path] = diff
+            if not new_path:
+                continue
+            if mr_change_paths is not None and new_path not in mr_change_paths:
+                get_logger().debug(
+                    f"Excluding {new_path} from incremental scope: not part of the MR diff "
+                    f"(likely brought in via a merge from the target branch)"
+                )
+                continue
+            self.unreviewed_files_set[new_path] = diff
 
     def get_commit_range(self):
         last_review_time = getattr(self.previous_review, 'created_at', None)
