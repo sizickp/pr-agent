@@ -428,10 +428,13 @@ class TestGitLabIncrementalReview:
     def test_get_previous_review_returns_most_recent_match(self, gitlab_provider):
         from pr_agent.algo.utils import PRReviewHeader
 
+        # GitLab returns notes in created_at-DESC order. The helper relies on that order
+        # (no local sort) — the unrelated newest note must be skipped, the newer matching
+        # note must win over the older matching note.
         gitlab_provider.mr.notes.list.return_value = [
-            self._make_note(1, f"{PRReviewHeader.REGULAR.value} 🔍\nold", "2024-04-01T10:00:00Z"),
-            self._make_note(2, f"{PRReviewHeader.REGULAR.value} 🔍\nnew", "2024-05-01T10:00:00Z"),
             self._make_note(3, "unrelated", "2024-06-01T10:00:00Z"),
+            self._make_note(2, f"{PRReviewHeader.REGULAR.value} 🔍\nnew", "2024-05-01T10:00:00Z"),
+            self._make_note(1, f"{PRReviewHeader.REGULAR.value} 🔍\nold", "2024-04-01T10:00:00Z"),
         ]
 
         result = gitlab_provider.get_previous_review(full=True, incremental=True)

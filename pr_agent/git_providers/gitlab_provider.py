@@ -46,7 +46,7 @@ def _parse_gitlab_iso_datetime(value) -> Optional[datetime]:
     if not isinstance(value, str):
         return None
     try:
-        s = value.replace('Z', '+00:00')
+        s = value.replace("Z", "+00:00")
         dt = datetime.fromisoformat(s)
         if dt.tzinfo is not None:
             dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
@@ -524,7 +524,13 @@ class GitLabProvider(GitProvider):
             )
 
         for diff in diffs:
-            new_path = diff.get('new_path') if isinstance(diff, dict) else None
+            # `repository_compare` normally yields dict entries, but defend against object-shaped
+            # responses too — otherwise a stricter library or stubbed client silently empties the
+            # incremental set and we degrade to "no new files".
+            if isinstance(diff, dict):
+                new_path = diff.get('new_path')
+            else:
+                new_path = getattr(diff, 'new_path', None)
             if not new_path:
                 continue
             if mr_change_paths is not None and new_path not in mr_change_paths:
@@ -574,7 +580,15 @@ class GitLabProvider(GitProvider):
 
         Used by incremental flows (`/review -i`, `/improve -i`) to find the timestamp
         we anchor the commit timeline on. Returns a `_GitlabIncrementalNote` adapter
-        with `.created_at` parsed to a naive UTC datetime, or `None` if no match.
+        with `.created_at` parsed to a naive UTC datetime (possibly `None` when the
+        GitLab payload had an unexpected shape), or `None` if no match.
+
+        We rely on GitLab returning notes in `created_at DESC` order (the API default)
+        and take the first match — re-sorting locally with a `datetime.min` fallback
+        for unparseable timestamps would silently demote the newest match in favour
+        of an older parseable one, leading to commits being re-reviewed. If the chosen
+        anchor's timestamp doesn't parse, `_get_incremental_commits` falls back to a
+        full run via the existing `last_seen_commit is None` branch.
         """
         if not prefixes:
             return None
@@ -586,18 +600,12 @@ class GitLabProvider(GitProvider):
             except Exception as e:
                 get_logger().error(f"Failed to list MR notes for incremental review: {e}")
                 return None
-        # gitlab returns notes newest-first; pick the most recent matching note
-        notes_sorted = sorted(
-            (n for n in self._incremental_notes_cache if getattr(n, 'body', None)),
-            key=lambda n: (
-                _parse_gitlab_iso_datetime(getattr(n, 'created_at', None))
-                or datetime.min
-            ),
-            reverse=True,
-        )
         mr_web_url = getattr(self.mr, 'web_url', None)
-        for note in notes_sorted:
-            if any(note.body.startswith(prefix) for prefix in prefixes):
+        for note in self._incremental_notes_cache:
+            body = getattr(note, 'body', None)
+            if not isinstance(body, str):
+                continue
+            if any(body.startswith(prefix) for prefix in prefixes):
                 return _GitlabIncrementalNote(note, mr_web_url=mr_web_url)
         return None
 
